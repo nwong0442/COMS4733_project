@@ -247,43 +247,59 @@ def generate_move_instructions(path):
 
     return instructions
 
-# --- 6. MAIN EXECUTION ---
-def main():
-    pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
-    pygame.display.set_caption("Maze Dijkstra Solver with Path Instructions")
-    clock = pygame.time.Clock()
-    
-    # Initialize font for numbering nodes
-    font = pygame.font.Font(None, 20) 
 
-    # Create the grid
+#IMPORTANT, ONLY FUNCTION YOU EVER NEED FROM THIS!!!!
+def start_end_to_instruction(start=START, end=END):
+    """
+    Generates the maze (consistently), finds the shortest path using Dijkstra's,
+    and returns the path as a list of directional instructions.
+    
+    :param start: The starting cell position (row, col). (5, 0) start. (0, 5) end. (0, 0) top left. Down and right increases!
+    :param end: The ending cell position (row, col).
+    :return: A list of strings ('U', 'D', 'L', 'R') representing the path.
+    """
+    # 1. Create the grid (Maze structure)
     grid = [[Cell(c, r) for c in range(COLS)] for r in range(ROWS)]
     
-    # Generate the maze
+    # 2. Generate the maze (Uses a fixed seed for consistency)
+    # The maze generation starts from (0, 0)
     start_cell_gen = grid[0][0] 
     generate_maze(start_cell_gen, grid)
-    
-    # Reset tracking variables for the search
+
+    # 3. Reset cell properties (visited, distance, parent) for the search
+    # Maze generation uses 'visited', so we must reset it for Dijkstra's
     for r in range(ROWS):
         for c in range(COLS):
             grid[r][c].visited = False
             grid[r][c].distance = float('inf')
             grid[r][c].parent = None
 
-    # Run Dijkstra's and unpack the results
-    visited_nodes, expansion_order = dijkstra_search(grid, START, END)
+    # 4. Run Dijkstra's Algorithm
+    # Note: visited_nodes and expansion_order are only used for visualization/info
+    visited_nodes, expansion_order = dijkstra_search(grid, start, end)
     
-    # Get the final path (sequence of Cell objects)
-    end_cell = grid[END[0]][END[1]]
+    # 5. Reconstruct the path (A deque of Cell objects)
+    # The 'end' is in (row, col) format, so we access the cell via grid[row][col]
+    end_cell = grid[end[0]][end[1]]
     path = reconstruct_path(end_cell)
 
-    # Generate and Print Instructions
+    # 6. Convert the path of Cell objects into a list of instructions
     move_instructions = generate_move_instructions(path)
-    print("--- Shortest Path Instructions (Start to Goal) ---")
+
+    print("--- Shortest Path Instructions (Start: (5, 0), End: (0, 5)) ---")
     print(move_instructions)
     print(f"Total steps: {len(move_instructions)}")
-    print("--------------------------------------------------")
+    
+    return move_instructions
+
+# --- 6. MAIN EXECUTION ---
+def main():
+    '''
+    final_path_instructions = start_end_to_instruction()
+
+    print("--- Shortest Path Instructions (Start: (5, 0), End: (0, 5)) ---")
+    print(final_path_instructions)
+    print(f"Total steps: {len(final_path_instructions)}")'''
     '''
     running = True
     while running:
