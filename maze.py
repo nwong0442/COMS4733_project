@@ -2,13 +2,14 @@ import pygame
 import random
 from collections import deque
 import heapq
+import sys # Import sys for clean exit
 
 # --- 1. CONFIGURATION ---
-WIDTH = 250
-HEIGHT = 250
-CELL_SIZE = 40  
-COLS = WIDTH // CELL_SIZE
-ROWS = HEIGHT // CELL_SIZE
+WIDTH = 600 # 30 cells * 20 pixels/cell
+HEIGHT = 600 # 30 cells * 20 pixels/cell
+CELL_SIZE = 20 
+COLS = 30 # WIDTH // CELL_SIZE (600/20)
+ROWS = 30 # HEIGHT // CELL_SIZE (600/20)
 
 # Colors
 WHITE = (255, 255, 255)
@@ -19,10 +20,18 @@ YELLOW = (255, 255, 0) # Final Path
 LIGHT_BLUE = (173, 216, 230) # Explored Nodes
 
 # Start and End points (row, col coordinates)
-# Start: Bottom-Left
-START = (ROWS - 1, 0) # (5, 0) for 6x6 grid
-# End: Top-Right
-END = (0, COLS - 1)   # (0, 5) for 6x6 grid
+START = (ROWS - 1, 0) 
+END = (0, COLS - 1) 
+
+# Central Obstacle Coordinates (Rows 10-19, Cols 10-19)
+OBS_R_START = 10
+OBS_R_END = 20
+OBS_C_START = 10
+OBS_C_END = 20
+
+# Global list to store removed walls (Wall ID: ((r, c), direction))
+REMOVED_WALLS = []
+
 
 # --- 2. CELL CLASS ---
 class Cell:
@@ -34,15 +43,21 @@ class Cell:
         self.distance = float('inf') 
 
     # Needed for the tie-breaker fix: Python needs to be able to compare Cell objects
-    # if the first two elements (distance and counter) in the heapq tuple are equal.
-    # We define a method to let the Cell be compared based on its coordinates.
     def __lt__(self, other):
-        # Comparison logic: compare by row (y), then by col (x)
         return (self.y, self.x) < (other.y, other.x)
 
     def draw(self, screen):
         x, y = self.x * CELL_SIZE, self.y * CELL_SIZE
         
+        is_obstacle = (OBS_R_START <= self.y < OBS_R_END and 
+                       OBS_C_START <= self.x < OBS_C_END)
+        
+        if is_obstacle:
+            # Draw the obstacle area as a solid BLACK block
+            rect = pygame.Rect(x, y, CELL_SIZE, CELL_SIZE)
+            pygame.draw.rect(screen, BLACK, rect)
+            return
+
         # Draw the walls
         if self.walls['N']:
             pygame.draw.line(screen, BLACK, (x, y), (x + CELL_SIZE, y), 2)
@@ -55,38 +70,66 @@ class Cell:
 
     def draw_path(self, screen, color):
         x, y = self.x * CELL_SIZE, self.y * CELL_SIZE
-        # Draw a small inner rectangle for the path/visited cell
         rect = pygame.Rect(x + CELL_SIZE // 4, y + CELL_SIZE // 4, CELL_SIZE // 2, CELL_SIZE // 2)
         pygame.draw.rect(screen, color, rect)
 
 # --- 3. MAZE GENERATION UTILITIES ---
+def is_in_obstacle(r, c):
+    """Checks if a cell (row r, col c) is inside the central 10x10 obstacle."""
+    return (OBS_R_START <= r < OBS_R_END and 
+            OBS_C_START <= c < OBS_C_END)
+
 def check_cell(x, y, grid):
-    """Returns the cell at (x, y) if it's in bounds, otherwise returns None."""
+    """Returns the cell at (x, y) if it's in bounds AND not in the obstacle, otherwise returns None."""
     if 0 <= x < COLS and 0 <= y < ROWS:
+        if is_in_obstacle(y, x):
+            return None
         return grid[y][x]
     return None
 
 def remove_wall(current, next_cell):
-    """Removes the wall between two adjacent cells."""
+    """
+    Removes the wall between two adjacent cells and records the removed wall.
+    The wall is recorded using the coordinates of the 'current' cell.
+    """
+    global REMOVED_WALLS
     dx = current.x - next_cell.x
     dy = current.y - next_cell.y
     
+    wall_key = None
+
     if dx == 1:  # next_cell is West of current
         current.walls['W'] = False
         next_cell.walls['E'] = False
+        wall_key = 'W'
     elif dx == -1: # next_cell is East of current
         current.walls['E'] = False
         next_cell.walls['W'] = False
+        wall_key = 'E'
     
     if dy == 1:  # next_cell is North of current
         current.walls['N'] = False
         next_cell.walls['S'] = False
+        wall_key = 'N'
     elif dy == -1: # next_cell is South of current
         current.walls['S'] = False
         next_cell.walls['N'] = False
+        wall_key = 'S'
+
+    # Store the unique identifier for the removed wall: ((row, col), direction)
+    if wall_key:
+        # We only record the wall break from the perspective of the *current* cell.
+        # The reconstruction logic handles the neighboring wall.
+        removed_wall_id = ((current.y, current.x), wall_key)
+        REMOVED_WALLS.append(removed_wall_id)
+
 
 def generate_maze(start_cell, grid):
-    """Generates the maze using Recursive Backtracking (DFS)."""
+    """Generates the maze using Recursive Backtracking (DFS). Skips obstacle area."""
+    # Reset walls list before generating a new maze
+    global REMOVED_WALLS
+    REMOVED_WALLS = [] 
+    
     random.seed(2) # Keep the seed for consistent maze
 
     stack = [start_cell]
@@ -116,6 +159,54 @@ def generate_maze(start_cell, grid):
         else:
             stack.pop()
 
+def reconstruct_maze_from_walls(removed_walls):
+    """
+    Reconstructs the maze grid structure based on a list of removed wall IDs.
+    All walls are initialized as present (True).
+    
+    NOTE: The main execution flow *does not* use this reconstructed grid for 
+    solving, but it's the function the prompt is specifically interested in 
+    as the 'reconstruction' logic.
+    """
+    # 1. Initialize a new grid with all walls present
+    new_grid = [[Cell(c, r) for c in range(COLS)] for r in range(ROWS)]
+    
+    # 2. Apply the wall removal instructions
+    for wall_id in removed_walls:
+        # wall_id format: ((r, c), direction)
+        (r, c), direction = wall_id
+        
+        # Get the cell where the wall removal is defined
+        current_cell = new_grid[r][c]
+        
+        # 3. Determine the neighboring cell and its corresponding wall key
+        dr, dc, opposite_direction = 0, 0, ''
+        
+        if direction == 'N':
+            dr, dc, opposite_direction = -1, 0, 'S'
+        elif direction == 'S':
+            dr, dc, opposite_direction = 1, 0, 'N'
+        elif direction == 'W':
+            dr, dc, opposite_direction = 0, -1, 'E'
+        elif direction == 'E':
+            dr, dc, opposite_direction = 0, 1, 'W'
+            
+        nr, nc = r + dr, c + dc
+        
+        # Check if the neighbor exists in the *new* grid (boundary check)
+        if 0 <= nr < ROWS and 0 <= nc < COLS:
+            next_cell = new_grid[nr][nc]
+            
+            # Remove the walls in both cells
+            current_cell.walls[direction] = False
+            next_cell.walls[opposite_direction] = False
+            
+    return new_grid
+
+def create_n_shape_opening(grid):
+    """Placeholder: This function is not used for the central obstacle design."""
+    pass
+
 
 # --- 4. DIJKSTRA'S ALGORITHM IMPLEMENTATION ---
 def get_neighbors(cell, grid):
@@ -125,69 +216,56 @@ def get_neighbors(cell, grid):
 
     # Directions: (dr, dc, wall_key)
     moves = [
-        (-1, 0, 'N'), # North (dr=-1, row decreases -> Up)
-        (1, 0, 'S'),  # South (dr=1, row increases -> Down)
-        (0, 1, 'E'),  # East (dc=1, col increases -> Right)
-        (0, -1, 'W')  # West (dc=-1, col decreases -> Left)
+        (-1, 0, 'N'), (1, 0, 'S'),  
+        (0, 1, 'E'), (0, -1, 'W') 
     ]
 
     for dr, dc, wall_key in moves:
         nr, nc = r + dr, c + dc
-        next_cell = check_cell(nc, nr, grid)
+        # Check for cell existence (bounds & obstacle) and open wall
+        next_cell = check_cell(nc, nr, grid) 
         
-        # Check if the neighbor exists AND the wall between them is removed
         if next_cell and not cell.walls[wall_key]:
             neighbors.append(next_cell)
             
     return neighbors
 
 def dijkstra_search(grid, start_pos, end_pos):
-    """
-    Implements Dijkstra's algorithm to find the shortest path, collecting 
-    the expansion order.
-    """
+    """Implements Dijkstra's algorithm to find the shortest path."""
+    if is_in_obstacle(start_pos[0], start_pos[1]) or is_in_obstacle(end_pos[0], end_pos[1]):
+         print("Error: Start or End position is inside the obstacle.")
+         return {}, []
+         
     start_cell = grid[start_pos[0]][start_pos[1]]
     end_cell = grid[end_pos[0]][end_pos[1]]
     
-    # Counter for tie-breaking: prevents TypeError when distances are equal.
     tie_breaker = 0 
-    
-    # Priority Queue: stores (distance, counter, cell)
     pq = [(0, tie_breaker, start_cell)]
     start_cell.distance = 0
-    
     visited_nodes = {}
     expansion_order = []
     
     while pq:
-        # Extract distance, counter (ignored), and cell
         current_distance, _, current_cell = heapq.heappop(pq)
         
-        # Optimization check
         if current_distance > current_cell.distance:
             continue
         
-        # Record the expansion order 
         expansion_order.append(current_cell)
         
-        # Goal check
         if current_cell == end_cell:
             break
         
         visited_nodes[current_cell] = True
 
-        # Explore neighbors
         for neighbor in get_neighbors(current_cell, grid):
-            new_distance = current_distance + 1 # Edge weight is 1
+            new_distance = current_distance + 1 
             
             if new_distance < neighbor.distance:
                 neighbor.distance = new_distance
                 neighbor.parent = current_cell
                 
-                # Increment the tie-breaker counter
                 tie_breaker += 1
-                
-                # Push the new item with the counter
                 heapq.heappush(pq, (new_distance, tie_breaker, neighbor))
                 
     return visited_nodes, expansion_order
@@ -197,155 +275,143 @@ def reconstruct_path(end_cell):
     """Reconstructs the path from the end_cell back to the start using parent pointers."""
     path = deque()
     current = end_cell
-    # Trace back until we hit the start cell (which has no parent)
     while current and current.parent: 
         path.appendleft(current)
         current = current.parent
     if current:
-        path.appendleft(current) # Add the start cell
+        path.appendleft(current) 
     return path
 
-# --- 5. PATH INSTRUCTION GENERATION (NEW) ---
-def generate_move_instructions(path):
+# --- 5. CORE MAZE FUNCTION ---
+def generate_and_solve_maze(start=START, end=END):
     """
-    Converts a sequence of Cell objects (the path) into a list of 
-    directional instructions (U, D, L, R).
-    The path is a deque of Cell objects.
+    Generates the maze, finds the shortest path, and returns the visualization 
+    data AND the list of removed walls.
     """
-    instructions = []
-    
-    # Iterate through the path, up to the second-to-last cell
-    for i in range(len(path) - 1):
-        current_cell = path[i]
-        next_cell = path[i+1]
-        
-        # Calculate the change in coordinates (d_row, d_col)
-        # Remember: y = row, x = col
-        d_row = next_cell.y - current_cell.y
-        d_col = next_cell.x - current_cell.x
-        
-        move = None
-        
-        # If moving up (row decreases)
-        if d_row == -1 and d_col == 0:
-            move = 'U' 
-        # If moving down (row increases)
-        elif d_row == 1 and d_col == 0:
-            move = 'D' 
-        # If moving left (col decreases)
-        elif d_col == -1 and d_row == 0:
-            move = 'L' 
-        # If moving right (col increases)
-        elif d_col == 1 and d_row == 0:
-            move = 'R' 
-        
-        if move:
-            instructions.append(move)
-        else:
-            # Should not happen if the path is valid
-            print(f"Error: Invalid move from ({current_cell.y}, {current_cell.x}) to ({next_cell.y}, {next_cell.x})")
-
-    return instructions
-
-
-#IMPORTANT, ONLY FUNCTION YOU EVER NEED FROM THIS!!!!
-def start_end_to_instruction(start=START, end=END):
-    """
-    Generates the maze (consistently), finds the shortest path using Dijkstra's,
-    and returns the path as a list of directional instructions.
-    
-    :param start: The starting cell position (row, col). (5, 0) start. (0, 5) end. (0, 0) top left. Down and right increases!
-    :param end: The ending cell position (row, col).
-    :return: A list of strings ('U', 'D', 'L', 'R') representing the path.
-    """
-    # 1. Create the grid (Maze structure)
+    # 1. Create the grid 
     grid = [[Cell(c, r) for c in range(COLS)] for r in range(ROWS)]
     
-    # 2. Generate the maze (Uses a fixed seed for consistency)
-    # The maze generation starts from (0, 0)
+    # 2. Generate the maze (REMOVED_WALLS list is populated here)
     start_cell_gen = grid[0][0] 
     generate_maze(start_cell_gen, grid)
+    
+    # Store the list of removed walls *after* generation is complete
+    final_removed_walls = REMOVED_WALLS 
 
-    # 3. Reset cell properties (visited, distance, parent) for the search
-    # Maze generation uses 'visited', so we must reset it for Dijkstra's
+    # 3. Reset for search
     for r in range(ROWS):
         for c in range(COLS):
-            grid[r][c].visited = False
-            grid[r][c].distance = float('inf')
-            grid[r][c].parent = None
+            if not is_in_obstacle(r, c):
+                grid[r][c].visited = False
+                grid[r][c].distance = float('inf')
+                grid[r][c].parent = None
 
     # 4. Run Dijkstra's Algorithm
-    # Note: visited_nodes and expansion_order are only used for visualization/info
     visited_nodes, expansion_order = dijkstra_search(grid, start, end)
     
-    # 5. Reconstruct the path (A deque of Cell objects)
-    # The 'end' is in (row, col) format, so we access the cell via grid[row][col]
+    # 5. Reconstruct the path 
     end_cell = grid[end[0]][end[1]]
     path = reconstruct_path(end_cell)
 
-    # 6. Convert the path of Cell objects into a list of instructions
+    # 6. Convert path to instructions
     move_instructions = generate_move_instructions(path)
 
-    print("--- Shortest Path Instructions (Start: (5, 0), End: (0, 5)) ---")
+    print(f"--- Shortest Path Instructions (Start: ({START[0]}, {START[1]}), End: ({END[0]}, {END[1]})) ---")
     print(move_instructions)
     print(f"Total steps: {len(move_instructions)}")
+    print(f"\nTotal Removed Walls: {len(final_removed_walls)}")
     
-    return move_instructions
+    # Return all necessary data
+    return grid, path, visited_nodes, expansion_order, final_removed_walls
 
-# --- 6. MAIN EXECUTION ---
-def main():
-    '''
-    final_path_instructions = start_end_to_instruction()
 
-    print("--- Shortest Path Instructions (Start: (5, 0), End: (0, 5)) ---")
-    print(final_path_instructions)
-    print(f"Total steps: {len(final_path_instructions)}")'''
-    '''
+def generate_move_instructions(path):
+    instructions = []
+    for i in range(len(path) - 1):
+        current_cell = path[i]
+        next_cell = path[i+1]
+        d_row = next_cell.y - current_cell.y
+        d_col = next_cell.x - current_cell.x
+        
+        if d_row == -1 and d_col == 0:
+            move = 'U' # Up
+        elif d_row == 1 and d_col == 0:
+            move = 'D' # Down
+        elif d_col == -1 and d_row == 0:
+            move = 'L' # Left
+        elif d_col == 1 and d_row == 0:
+            move = 'R' # Right
+        else: move = None
+        
+        if move: instructions.append(move)
+    return instructions
+
+
+# --- 6. VISUALIZATION FUNCTION ---
+def visualize_maze(grid, path, visited_nodes, expansion_order):
+    """Initializes Pygame and runs the visualization loop."""
+    try:
+        pygame.init()
+    except pygame.error as e:
+        print(f"Pygame initialization failed: {e}")
+        print("Please ensure you have a display server running if accessing remotely.")
+        return
+        
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("30x30 Maze with Central Obstacle")
+    clock = pygame.time.Clock()
+    
     running = True
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
 
         screen.fill(WHITE)
 
-        # Draw the maze walls
+        # Draw explored nodes
+        for cell in visited_nodes:
+            # We skip drawing a path marker for the start cell itself since it will be drawn over by GREEN
+            if (cell.y, cell.x) != START and (cell.y, cell.x) != END:
+                cell.draw_path(screen, LIGHT_BLUE) 
+        
+        # Draw final path
+        for cell in path:
+            cell.draw_path(screen, YELLOW)
+            
+        # Draw walls and obstacles
         for r in range(ROWS):
             for c in range(COLS):
                 grid[r][c].draw(screen)
         
-        # Draw the Dijkstra's explored nodes (light blue)
-        for cell in visited_nodes:
-            cell.draw_path(screen, LIGHT_BLUE) 
-        
-        # Draw the final path (yellow)
-        for cell in path:
-            cell.draw_path(screen, YELLOW)
-            
-        # Draw the expansion order numbers
-        for i, cell in enumerate(expansion_order):
-            # We start the count at 1
-            label_text = str(i + 1)
-            
-            # Prepare the surface for the text (Black text)
-            text_surface = font.render(label_text, True, BLACK)
-            
-            # Calculate the position to center the text in the cell
-            x = cell.x * CELL_SIZE + (CELL_SIZE - text_surface.get_width()) // 2
-            y = cell.y * CELL_SIZE + (CELL_SIZE - text_surface.get_height()) // 2
-            
-            # Draw the text on the screen
-            screen.blit(text_surface, (x, y))
-            
-        # Highlight Start (GREEN) and End (RED) on top
-        grid[START[0]][START[1]].draw_path(screen, GREEN)
-        grid[END[0]][END[1]].draw_path(screen, RED)
+        # Draw Start/End points last to ensure visibility
+        grid[START[0]][START[1]].draw_path(screen, GREEN) # Start
+        grid[END[0]][END[1]].draw_path(screen, RED)       # End
 
         pygame.display.flip()
         clock.tick(60)
 
     pygame.quit()
-    '''
+    sys.exit()
+
+
+# --- 7. MAIN EXECUTION ---
+def main():
+    # 1. Generate the maze and solve it, getting visualization data and removed walls list
+    grid, path, visited_nodes, expansion_order, removed_walls = generate_and_solve_maze()
+    
+    # print("\n--- List of Removed Walls (ID: ((Row, Col), Direction)) ---")
+    
+    # You can call the reconstruction function here if you needed to test it
+    # grid = reconstruct_maze_from_walls(removed_walls) 
+    
+    # 3. Call the visualization function
+    # NOTE: This requires a graphical environment (Pygame) to run successfully.
+    visualize_maze(grid, path, visited_nodes, expansion_order)
+
 
 if __name__ == "__main__":
     main()
