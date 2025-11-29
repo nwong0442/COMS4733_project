@@ -398,7 +398,74 @@ def visualize_maze(grid, path, visited_nodes, expansion_order):
     sys.exit()
 
 
-# --- 7. MAIN EXECUTION ---
+# --- 7. HELPER FUNCTIONS ---
+def convert_david_to_mujoco_format(removed_walls, grid_size):
+    """
+    Converts wall format ((row, col), direction) to 
+    MuJoCo cell pair format (cell1, cell2).
+    
+    Args:
+        removed_walls: List of ((row, col), direction) tuples
+        grid_size: Number of cells per side (e.g., 30 for this maze)
+    
+    Returns:
+        List of (cell1, cell2) tuples where cells are numbered 1 to grid_size²
+    """
+    cell_pairs = []
+    
+    for (row, col), direction in removed_walls:
+        # Convert (row, col) to cell number (1-indexed)
+        cell1 = row * grid_size + col + 1
+        
+        # Find the neighboring cell based on direction
+        if direction == 'N':
+            cell2 = cell1 - grid_size  # Cell above
+        elif direction == 'S':
+            cell2 = cell1 + grid_size  # Cell below
+        elif direction == 'W':
+            cell2 = cell1 - 1  # Cell to the left
+        elif direction == 'E':
+            cell2 = cell1 + 1  # Cell to the right
+        else:
+            continue
+        
+        # Only add if cell2 is valid
+        if 1 <= cell2 <= grid_size * grid_size:
+            cell_pairs.append((cell1, cell2))
+    
+    return cell_pairs
+
+
+def get_removed_walls():
+    """
+    Returns the list of removed walls in MuJoCo format (cell1, cell2).
+    Call this AFTER generate_and_solve_maze() has been run.
+    
+    NOTE: This generates a new maze each time it's called. If you need
+    the same maze across multiple calls, call generate_and_solve_maze()
+    once and store the result.
+    """
+    _, _, _, _, removed_walls = generate_and_solve_maze()
+    return convert_david_to_mujoco_format(removed_walls, COLS)
+
+
+def start_end_to_instruction():
+    """
+    Generates the maze and returns the path instructions.
+    This is the function that project.ipynb calls!
+    
+    Returns:
+        List of move instructions ('U', 'D', 'L', 'R')
+    """
+    # Generate maze and solve it (without visualization)
+    grid, path, visited_nodes, expansion_order, removed_walls = generate_and_solve_maze()
+    
+    # Return the move instructions
+    instructions = generate_move_instructions(path)
+    return instructions
+
+
+# --- 8. MAIN EXECUTION ---
 def main():
     # 1. Generate the maze and solve it, getting visualization data and removed walls list
     grid, path, visited_nodes, expansion_order, removed_walls = generate_and_solve_maze()
