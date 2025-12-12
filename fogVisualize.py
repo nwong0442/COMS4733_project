@@ -35,7 +35,7 @@ OBS_C_END = 20
 REMOVED_WALLS = []
 
 # Simulation Globals
-FOG_OF_WAR_N = 5 #Can edit 3,5,7,9,11...
+FOG_OF_WAR_N = 3 #Can edit 3,5,7,9,11...
 GLOBAL_MAZE_GRID = None 
 FOG_GRID = None         
 
@@ -241,7 +241,7 @@ def reconstruct_path(end_node):
 
 def generate_and_solve_maze_2(start_pos):
     """Main Loop: Sense -> Update -> Re-plan (Repeated A*)."""
-
+    setup()
     # SENSE
     sense_area(start_pos, GLOBAL_MAZE_GRID, FOG_GRID)
     
